@@ -150,8 +150,7 @@ class DataService:
 
         df = self.get_history(symbol)
 
-        return not df.empty
-
+        return df is not None and not df.empty
     # =========================================================
     # LẤY NGÀY CUỐI CÙNG CỦA DỮ LIỆU LỊCH SỬ
     # =========================================================
@@ -484,3 +483,40 @@ if __name__ == "__main__":
         print(
             "\n[TEST] Data Service đã đóng."
         )
+
+# =========================================================
+   # =========================================================
+    # LẤY CHỈ SỐ TÀI CHÍNH CƠ BẢN (FA: ROE, PE, EPS, PB)
+    # =========================================================
+
+    def get_fa_data(self, symbol):
+        """Lấy thông tin tài chính cơ bản từ API TCBS."""
+        if not symbol:
+            return {}
+
+        symbol = symbol.strip().upper()
+        url = f"https://apipub.tcbs.com.vn/tsci/v1/company/overview?ticker={symbol}"
+        
+        try:
+            import requests
+            response = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=3)
+            if response.status_code == 200:
+                data = response.json()
+                return {
+                    "ticker": symbol,
+                    "roe": round(float(data.get("roe", 0) or 0) * 100, 2),
+                    "pe": round(float(data.get("pe", 0) or 0), 2),
+                    "pb": round(float(data.get("pb", 0) or 0), 2),
+                    "eps": float(data.get("eps", 0) or 0),
+                    "eps_growth_yoy": round(float(data.get("epsChange3Yr", 0) or 0) * 100, 2)
+                }
+        except Exception as e:
+            print(f"[DATA SERVICE ERROR] Lỗi lấy FA cho {symbol}: {e}")
+
+        return {}
+# -----------------------------------------------------
+        # TEST 10: LẤY THÔNG TIN FA (ROE, PE, EPS)
+        # -----------------------------------------------------
+        print("\n[TEST 10] Lấy thông tin FA HPG")
+        fa_info = service.get_fa_data("HPG")
+        print(fa_info)

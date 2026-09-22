@@ -3,9 +3,10 @@ strategies/signal_generator.py — Bộ điều phối & Định dạng Tín hi�
 Nhiệm vụ:
   1. Nhận danh sách sự kiện (BUY / WATCH / SELL) từ ta_strategy.py.
   2. Lọc trùng lặp (Deduplication / Chống Spam): Không gửi lại cùng 1 loại tín hiệu
-     cho cùng 1 mã trong khoảng thời gian cấu hình (VD: trong vòng 1 ngày hoặc 4 tiếng).
+     cho cùng 1 mã trong khoảng thời gian cấu hình (VD: 4 tiếng).
   3. Format tin nhắn Telegram HTML đẹp mắt, phân biệt rõ BUY (🟢), WATCH (🟡), SELL (🔴).
-  4. Lưu lịch sử các tín hiệu đã phát vào data/signal_history.json.
+  4. An toàn dữ liệu: Xử lý chuỗi 'N/A', None, và lệch đơn vị tính Lãi/Lỗ.
+  5. Lưu lịch sử các tín hiệu đã phát vào data/signal_history.json.
 """
 
 from __future__ import annotations
@@ -18,6 +19,25 @@ from pathlib import Path
 
 DEFAULT_SIGNAL_HISTORY_PATH = "data/signal_history.json"
 DEDUP_COOLDOWN_HOURS = 4  # Tránh spam: Cùng 1 mã + cùng signal_type thì cách nhau ít nhất 4 tiếng mới báo lại
+
+
+# ----------------------------------------------------------------------------
+# Helper: Ép kiểu số an toàn (Tránh crash khi dữ liệu là 'N/A' hoặc None)
+# ----------------------------------------------------------------------------
+def _safe_float(val, default=None):
+    if val is None or val == "N/A":
+        return default
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return default
+
+
+def _format_num(val, fmt="{:,.1f}", suffix=""):
+    num = _safe_float(val)
+    if num is None:
+        return "N/A"
+    return f"{fmt.format(num)}{suffix}"
 
 
 # ----------------------------------------------------------------------------
@@ -65,7 +85,7 @@ def is_duplicate_signal(event: dict, history: list[dict], cooldown_hours: int = 
     for item in reversed(history):
         if item.get("ticker") == ticker and item.get("signal_type") == signal_type:
             try:
-                prev_time = datetime.strptime(item.get("time"), "%Y-%m-%d %H:%M:%S")
+                prev_time = datetime.strptime(str(item.get("time")), "%Y-%m-%d %H:%M:%S")
                 if current_time - prev_time < timedelta(hours=cooldown_hours):
                     return True  # Bị trùng trong khoảng thời gian cooldown -> Bỏ qua
             except ValueError:
@@ -77,63 +97,86 @@ def is_duplicate_signal(event: dict, history: list[dict], cooldown_hours: int = 
 # 2. Template Định dạng Tin nhắn Telegram (HTML Format)
 # ----------------------------------------------------------------------------
 def format_telegram_message(event: dict) -> str:
-    """Biến đổi dict event thành mẫu tin nhắn Telegram trực quan."""
+    """Biến đổi dict event thành mẫu tin nhắn Telegram trực quan & an toàn."""
     ticker = event.get("ticker", "N/A")
     signal_type = event.get("signal_type", "INFO")
-    price = f"{event.get('price', 0):,.1f}"
     time_str = event.get("time", "")
+    
+    price_val = _safe_float(event.get("price"), 0.0)
+    price_str = _format_num(price_val, "{:,.1f}")
+
     ta = event.get("ta_criteria", {})
     fa = event.get("fa_criteria", {})
 
-    roe_str = f"{fa.get('ROE')}%" if fa.get("ROE") else "N/A"
-    eps_str = f"{fa.get('EPS_Growth')}%" if fa.get("EPS_Growth") else "N/A"
+    # Chuẩn hóa P/E, ROE, EPS Growth không lo 'N/A' crash
+    roe_val = fa.get("ROE") or fa.get("roe")
+    pe_val = fa.get("PE") or fa.get("pe") or fa.get("P/E")
+    eps_val = fa.get("EPS_Growth") or fa.get("eps_growth_qoq") or fa.get("eps_growth_yoy")
+
+    roe_str = _format_num(roe_val, "{:.1f}", "%")
+    pe_str = _format_num(pe_val, "{:.1f}")
+    eps_str = _format_num(eps_val, "{:+.1f}", "%")
 
     if signal_type == "BUY":
-        stop_loss_str = f"{event.get('stop_loss', 0):,.1f}"
+        stop_loss_val = _safe_float(event.get("stop_loss"), 0.0)
+        stop_loss_str = _format_num(stop_loss_val, "{:,.1f}")
+        
         return f"""🟢 <b>[TÍN HIỆU MUA CHÍNH THỨC] #{ticker}</b>
 ⏰ <i>Thời gian: {time_str}</i>
 
-💰 <b>Giá Mua:</b> {price} VNĐ
+💰 <b>Giá Mua:</b> {price_str} VNĐ
 🛑 <b>Cắt lỗ (Stoploss 2xATR):</b> {stop_loss_str} VNĐ
 
 ⚙️ <b>Chỉ báo Kỹ thuật (TA):</b>
-  • EMA20: {ta.get('EMA20_Status')}
-  • RSI(14): {ta.get('RSI')} (Chuẩn tích lũy)
-  • Vol Ratio: {ta.get('Volume_Ratio')}x SMA20 (Bùng nổ)
+  • EMA20: {ta.get('EMA20_Status', 'N/A')}
+  • RSI(14): {ta.get('RSI', 'N/A')} (Chuẩn tích lũy)
+  • Vol Ratio: {ta.get('Volume_Ratio', 'N/A')}x SMA20 (Bùng nổ)
 
 📊 <b>Nền tảng Doanh nghiệp (FA):</b>
-  • ROE: {roe_str} | EPS Tăng trưởng: {eps_str}
+  • ROE: {roe_str} | P/E: {pe_str} | Tăng trưởng EPS: {eps_str}
 
-🎯 <b>Khuyến nghị:</b> Đạt đủ 3/3 điều kiện. Xuống tiền giải ngân theo tỷ trọng quản trị rủi ro."""
+🎯 <b>Khuyến nghị:</b> Đạt đủ điều kiện. Xuống tiền giải ngân theo tỷ trọng quản trị rủi ro."""
 
     elif signal_type == "WATCH":
         return f"""🟡 <b>[CẢNH BÁO SỚM - RÌNH LỆNH] #{ticker}</b>
 ⏰ <i>Thời gian: {time_str}</i>
 
-💰 <b>Giá Hiện tại:</b> {price} VNĐ
+💰 <b>Giá Hiện tại:</b> {price_str} VNĐ
 
 ⚙️ <b>Trạng thái Kỹ thuật (TA):</b>
-  • EMA20: {ta.get('EMA20_Status')} (Xu hướng tốt)
-  • RSI(14): {ta.get('RSI')} (Động lượng khỏe)
-  • Vol Ratio: {ta.get('Volume_Ratio')}x SMA20 <i>(Cần >= 1.2x)</i>
+  • EMA20: {ta.get('EMA20_Status', 'N/A')} (Xu hướng tốt)
+  • RSI(14): {ta.get('RSI', 'N/A')} (Động lượng khỏe)
+  • Vol Ratio: {ta.get('Volume_Ratio', 'N/A')}x SMA20 <i>(Cần >= 1.2x)</i>
+
+📊 <b>Nền tảng Doanh nghiệp (FA):</b>
+  • ROE: {roe_str} | P/E: {pe_str} | EPS: {eps_str}
 
 💡 <b>Ghi chú:</b> {event.get('note', 'Mã tích lũy đẹp, chờ dòng tiền xác nhận để MUA.')}
 🎯 <b>Khuyến nghị:</b> Đưa vào Watchlist rình lệnh. Mua ngay khi Vol bùng nổ trong phiên."""
 
     elif signal_type == "SELL":
-        pnl = event.get("pnl_pct", 0)
-        pnl_icon = "🚀 +" if pnl >= 0 else "🔻 "
+        pnl_raw = _safe_float(event.get("pnl_pct"), 0.0)
+        
+        # Xử lý an toàn đơn vị % PnL (tránh nhảy +97563.6%)
+        if abs(pnl_raw) > 500:
+            pnl_val = pnl_raw / 1000.0  # Chuẩn hóa nếu lệch đơn vị nghìn đồng
+        else:
+            pnl_val = pnl_raw
+
+        pnl_icon = "🚀 +" if pnl_val >= 0 else "🔻 "
+        entry_price_str = _format_num(event.get("entry_price"), "{:,.1f}")
+
         return f"""🔴 <b>[TÍN HIỆU BÁN / ĐÓNG VỊ THẾ] #{ticker}</b>
 ⏰ <i>Thời gian: {time_str}</i>
 
-💰 <b>Giá Bán:</b> {price} VNĐ (Giá mua: {event.get('entry_price', 'N/A')})
-📈 <b>Hiệu suất (P&L):</b> {pnl_icon}{pnl}%
+💰 <b>Giá Bán:</b> {price_str} VNĐ (Giá mua: {entry_price_str})
+📈 <b>Hiệu suất (P&L):</b> {pnl_icon}{pnl_val:.1f}%
 
 ⚠️ <b>Lý do Bán:</b> {event.get('sell_reason', 'Chốt lời/Cắt lỗ theo kỷ luật')}
 
 🎯 <b>Khuyến nghị:</b> Thực hiện bán chốt lời hoặc cắt lỗ theo đúng nguyên tắc quản trị."""
 
-    return f"ℹ️ <b>[{signal_type}] #{ticker}</b> - Giá: {price}"
+    return f"ℹ️ <b>[{signal_type}] #{ticker}</b> - Giá: {price_str}"
 
 
 # ----------------------------------------------------------------------------

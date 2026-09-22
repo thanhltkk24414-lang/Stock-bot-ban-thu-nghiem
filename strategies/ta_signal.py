@@ -8,19 +8,6 @@ Ví dụ:
     /signal HPG
 
 Không phụ thuộc data/watch_list.json.
-
-Luồng:
-    User nhập mã
-        ↓
-    Historical OHLCV + Live data
-        ↓
-    Tạo current/live bar
-        ↓
-    EMA20 / RSI14 / Volume SMA20 / ATR14
-        ↓
-    BUY / WATCH / SELL / NO SIGNAL
-        ↓
-    Stop Loss + Take Profit + Risk/Reward
 """
 
 from __future__ import annotations
@@ -61,6 +48,37 @@ MIN_BARS_REQUIRED = 60
 
 
 # ============================================================
+# HELPER CHUẨN HÓA & ÉP KIỂU AN TOÀN (TRÁNH CRASH)
+# ============================================================
+
+def _normalize_price(price: float) -> float:
+    """Tự động quy đổi giá về đơn vị Nghìn VNĐ (VD: 20900 -> 20.9)."""
+    if price is None or pd.isna(price) or price <= 0:
+        return 0.0
+    if price > 2000:
+        return price / 1000.0
+    return float(price)
+
+
+def _safe_float(val, default=0.0):
+    """Ép kiểu float an toàn, không bị văng lỗi khi gặp 'N/A' hoặc None."""
+    if val is None or val == "N/A" or pd.isna(val):
+        return default
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return default
+
+
+def _fmt(val, fmt_str="{:,.2f}", suffix=""):
+    """Định dạng chuỗi hiển thị an toàn."""
+    num = _safe_float(val, None)
+    if num is None:
+        return "N/A"
+    return f"{fmt_str.format(num)}{suffix}"
+
+
+# ============================================================
 # DATABASE
 # ============================================================
 
@@ -73,19 +91,6 @@ def load_historical_data(
     ticker: str,
     limit: int = 150,
 ) -> pd.DataFrame:
-    """
-    Lấy dữ liệu OHLCV lịch sử của một mã.
-
-    Database hiện tại:
-        symbol
-        date
-        open
-        high
-        low
-        close
-        volume
-    """
-
     ticker = ticker.upper().strip()
 
     query = f"""
@@ -103,25 +108,22 @@ def load_historical_data(
         LIMIT ?
     """
 
-    with get_connection() as conn:
-        df = pd.read_sql_query(
-            query,
-            conn,
-            params=(ticker, limit),
-        )
+    try:
+        with get_connection() as conn:
+            df = pd.read_sql_query(
+                query,
+                conn,
+                params=(ticker, limit),
+            )
+    except Exception:
+        return pd.DataFrame()
 
     if df.empty:
         return df
 
     df["date"] = pd.to_datetime(df["date"])
 
-    numeric_cols = [
-        "open",
-        "high",
-        "low",
-        "close",
-        "volume",
-    ]
+    numeric_cols = ["open", "high", "low", "close", "volume"]
 
     for col in numeric_cols:
         df[col] = pd.to_numeric(
@@ -129,15 +131,13 @@ def load_historical_data(
             errors="coerce",
         )
 
-    df = df.dropna(
-        subset=[
-            "open",
-            "high",
-            "low",
-            "close",
-            "volume",
-        ]
-    )
+    df = df.dropna(subset=["open", "high", "low", "close", "volume"])
+
+    # Chuẩn hóa đơn vị giá lịch sử (nếu bị lưu nguyên đơn vị Đồng)
+    df["close"] = df["close"].apply(_normalize_price)
+    df["open"] = df["open"].apply(_normalize_price)
+    df["high"] = df["high"].apply(_normalize_price)
+    df["low"] = df["low"].apply(_normalize_price)
 
     df = df.sort_values("date").reset_index(drop=True)
 
@@ -149,57 +149,30 @@ def load_historical_data(
 # ============================================================
 
 def load_live_ticks(ticker: str) -> pd.DataFrame:
+    ticker = ticker.upper().strip()
+    if not ticker:
+        return pd.DataFrame()
+
+    query = """
+        SELECT symbol, price, volume, timestamp as time 
+        FROM realtime_ticks 
+        WHERE symbol = ? 
+        ORDER BY timestamp DESC LIMIT 1
     """
-    Lấy dữ liệu realtime hiện có trong project.
-
-    ------------------------------------------------------------
-    QUAN TRỌNG
-    ------------------------------------------------------------
-    Hàm này cần được nối với nguồn realtime của project.
-
-    Nếu project của bạn hiện tại đã có hàm lấy live data trong
-    ta_strategy.py thì copy phần lấy live-bar từ đó vào đây.
-
-    Nếu chưa có live table, hàm trả về DataFrame rỗng.
-    Khi đó hệ thống vẫn chạy bằng dữ liệu OHLCV gần nhất.
-    """
-
-    # ---------------------------------------------------------
-    # PLACEHOLDER
-    # ---------------------------------------------------------
-    # Ví dụ nếu project có bảng live_ticks:
-    #
-    # query = """
-    #     SELECT time, price, volume
-    #     FROM live_ticks
-    #     WHERE symbol = ?
-    #     ORDER BY time
-    # """
-    #
-    # with get_connection() as conn:
-    #     return pd.read_sql_query(
-    #         query,
-    #         conn,
-    #         params=(ticker,),
-    #     )
-
-    return pd.DataFrame()
+    try:
+        with get_connection() as conn:
+            df = pd.read_sql_query(query, conn, params=(ticker,))
+            if not df.empty and "price" in df.columns:
+                df["price"] = df["price"].apply(_normalize_price)
+            return df
+    except Exception:
+        return pd.DataFrame()
 
 
 def merge_live_bar(
     historical: pd.DataFrame,
     live_ticks: pd.DataFrame,
 ) -> pd.DataFrame:
-    """
-    Ghép dữ liệu realtime vào historical OHLCV.
-
-    Nếu không có live_ticks:
-        trả về historical.
-
-    Nếu có:
-        tạo/cập nhật bar hiện tại.
-    """
-
     if historical.empty:
         return historical
 
@@ -208,71 +181,38 @@ def merge_live_bar(
 
     live = live_ticks.copy()
 
-    # Chuẩn hóa tên cột
-    live.columns = [
-        str(c).lower()
-        for c in live.columns
-    ]
+    live.columns = [str(c).lower() for c in live.columns]
 
-    # Kiểm tra các cột cần thiết
     if "price" not in live.columns:
         return historical.copy()
 
-    # Volume có thể không tồn tại
     if "volume" not in live.columns:
         live["volume"] = 0
 
-    current_price = float(
-        pd.to_numeric(
-            live["price"],
-            errors="coerce",
-        ).dropna().iloc[-1]
-    )
+    valid_prices = pd.to_numeric(live["price"], errors="coerce").dropna()
+    if valid_prices.empty:
+        return historical.copy()
 
-    valid_prices = pd.to_numeric(
-        live["price"],
-        errors="coerce",
-    ).dropna()
-
-    current_open = float(valid_prices.iloc[0])
-    current_high = float(valid_prices.max())
-    current_low = float(valid_prices.min())
+    current_price = _normalize_price(float(valid_prices.iloc[-1]))
+    current_open = _normalize_price(float(valid_prices.iloc[0]))
+    current_high = _normalize_price(float(valid_prices.max()))
+    current_low = _normalize_price(float(valid_prices.min()))
 
     current_volume = float(
-        pd.to_numeric(
-            live["volume"],
-            errors="coerce",
-        ).fillna(0).sum()
+        pd.to_numeric(live["volume"], errors="coerce").fillna(0).sum()
     )
 
     result = historical.copy()
-
-    # Ngày hiện tại
     today = pd.Timestamp.now().normalize()
-
-    # Nếu đã có bar hôm nay → cập nhật
     today_mask = result["date"].dt.normalize() == today
 
     if today_mask.any():
-
         idx = result.index[today_mask][-1]
-
         result.loc[idx, "close"] = current_price
-        result.loc[idx, "high"] = max(
-            float(result.loc[idx, "high"]),
-            current_high,
-        )
-        result.loc[idx, "low"] = min(
-            float(result.loc[idx, "low"]),
-            current_low,
-        )
-        result.loc[idx, "volume"] = max(
-            float(result.loc[idx, "volume"]),
-            current_volume,
-        )
-
+        result.loc[idx, "high"] = max(float(result.loc[idx, "high"]), current_high)
+        result.loc[idx, "low"] = min(float(result.loc[idx, "low"]), current_low)
+        result.loc[idx, "volume"] = max(float(result.loc[idx, "volume"]), current_volume)
     else:
-
         new_bar = pd.DataFrame(
             [{
                 "symbol": result["symbol"].iloc[-1],
@@ -284,136 +224,52 @@ def merge_live_bar(
                 "volume": current_volume,
             }]
         )
+        result = pd.concat([result, new_bar], ignore_index=True)
 
-        result = pd.concat(
-            [result, new_bar],
-            ignore_index=True,
-        )
-
-    return result.sort_values(
-        "date"
-    ).reset_index(drop=True)
+    return result.sort_values("date").reset_index(drop=True)
 
 
 # ============================================================
 # INDICATORS
 # ============================================================
 
-def calculate_ema(
-    close: pd.Series,
-    period: int = EMA_PERIOD,
-) -> pd.Series:
-
-    return close.ewm(
-        span=period,
-        adjust=False,
-    ).mean()
+def calculate_ema(close: pd.Series, period: int = EMA_PERIOD) -> pd.Series:
+    return close.ewm(span=period, adjust=False).mean()
 
 
-def calculate_rsi(
-    close: pd.Series,
-    period: int = RSI_PERIOD,
-) -> pd.Series:
-
+def calculate_rsi(close: pd.Series, period: int = RSI_PERIOD) -> pd.Series:
     delta = close.diff()
-
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
 
-    avg_gain = gain.ewm(
-        alpha=1 / period,
-        adjust=False,
-        min_periods=period,
-    ).mean()
+    avg_gain = gain.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
+    avg_loss = loss.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
 
-    avg_loss = loss.ewm(
-        alpha=1 / period,
-        adjust=False,
-        min_periods=period,
-    ).mean()
-
-    rs = avg_gain / avg_loss.replace(
-        0,
-        np.nan,
-    )
-
-    rsi = 100 - (
-        100 / (1 + rs)
-    )
-
+    rs = avg_gain / avg_loss.replace(0, np.nan)
+    rsi = 100 - (100 / (1 + rs))
     return rsi
 
 
-def calculate_atr(
-    df: pd.DataFrame,
-    period: int = ATR_PERIOD,
-) -> pd.Series:
-
+def calculate_atr(df: pd.DataFrame, period: int = ATR_PERIOD) -> pd.Series:
     previous_close = df["close"].shift(1)
+    tr1 = df["high"] - df["low"]
+    tr2 = (df["high"] - previous_close).abs()
+    tr3 = (df["low"] - previous_close).abs()
 
-    tr1 = (
-        df["high"] -
-        df["low"]
-    )
-
-    tr2 = (
-        df["high"] -
-        previous_close
-    ).abs()
-
-    tr3 = (
-        df["low"] -
-        previous_close
-    ).abs()
-
-    true_range = pd.concat(
-        [tr1, tr2, tr3],
-        axis=1,
-    ).max(axis=1)
-
-    atr = true_range.ewm(
-        alpha=1 / period,
-        adjust=False,
-        min_periods=period,
-    ).mean()
-
+    true_range = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr = true_range.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
     return atr
 
 
-def calculate_indicators(
-    df: pd.DataFrame,
-) -> pd.DataFrame:
-
+def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
     result = df.copy()
 
-    result["ema20"] = calculate_ema(
-        result["close"]
-    )
-
-    result["rsi14"] = calculate_rsi(
-        result["close"]
-    )
-
-    result["volume_sma20"] = (
-        result["volume"]
-        .rolling(VOLUME_SMA_PERIOD)
-        .mean()
-    )
-
-    result["volume_ratio"] = (
-        result["volume"]
-        / result["volume_sma20"]
-    )
-
-    result["atr14"] = calculate_atr(
-        result
-    )
-
-    # EMA slope
-    result["ema20_rising"] = (
-        result["ema20"]
-        > result["ema20"].shift(1)
-    )
+    result["ema20"] = calculate_ema(result["close"])
+    result["rsi14"] = calculate_rsi(result["close"])
+    result["volume_sma20"] = result["volume"].rolling(VOLUME_SMA_PERIOD).mean()
+    result["volume_ratio"] = result["volume"] / result["volume_sma20"]
+    result["atr14"] = calculate_atr(result)
+    result["ema20_rising"] = result["ema20"] > result["ema20"].shift(1)
 
     return result
 
@@ -422,184 +278,76 @@ def calculate_indicators(
 # SIGNAL
 # ============================================================
 
-def evaluate_signal(
-    df: pd.DataFrame,
-) -> dict:
-
+def evaluate_signal(df: pd.DataFrame) -> dict:
     if len(df) < MIN_BARS_REQUIRED:
-
         return {
             "signal": "NO SIGNAL",
-            "reason": (
-                f"Không đủ dữ liệu "
-                f"({len(df)}/{MIN_BARS_REQUIRED} bars)"
-            ),
+            "reason": f"Không đủ dữ liệu ({len(df)}/{MIN_BARS_REQUIRED} bars)",
         }
 
     row = df.iloc[-1]
+    previous_row = df.iloc[-2] if len(df) >= 2 else None
 
-    previous_row = (
-        df.iloc[-2]
-        if len(df) >= 2
-        else None
-    )
+    price = _safe_float(row["close"])
+    ema20 = _safe_float(row["ema20"])
+    rsi14 = _safe_float(row["rsi14"])
+    volume = _safe_float(row["volume"])
+    volume_sma20 = _safe_float(row["volume_sma20"])
+    volume_ratio = _safe_float(row["volume_ratio"])
+    atr14 = _safe_float(row["atr14"])
 
-    price = float(row["close"])
-    ema20 = float(row["ema20"])
-    rsi14 = float(row["rsi14"])
-    volume = float(row["volume"])
-    volume_sma20 = float(row["volume_sma20"])
-    volume_ratio = float(row["volume_ratio"])
-    atr14 = float(row["atr14"])
+    ema20_rising = bool(row.get("ema20_rising", False))
 
-    ema20_rising = bool(
-        row["ema20_rising"]
-    )
+    trend_ok = (price > ema20) and ema20_rising
+    volume_ok = volume_ratio >= VOLUME_SPIKE_RATIO
+    momentum_ok = RSI_BUY_MIN <= rsi14 <= RSI_BUY_MAX
 
-    # ---------------------------------------------------------
-    # BUY CONDITIONS
-    # ---------------------------------------------------------
+    buy_score = sum([trend_ok, volume_ok, momentum_ok])
 
-    trend_ok = (
-        price > ema20
-        and ema20_rising
-    )
-
-    volume_ok = (
-        volume_ratio >=
-        VOLUME_SPIKE_RATIO
-    )
-
-    momentum_ok = (
-        RSI_BUY_MIN
-        <= rsi14
-        <= RSI_BUY_MAX
-    )
-
-    buy_score = sum(
-        [
-            trend_ok,
-            volume_ok,
-            momentum_ok,
-        ]
-    )
-
-    # ---------------------------------------------------------
-    # SELL CONDITIONS
-    # ---------------------------------------------------------
-
-    price_below_ema = (
-        price < ema20
-    )
-
+    price_below_ema = price < ema20
     rsi_declining = False
 
     if previous_row is not None:
+        previous_rsi = _safe_float(previous_row["rsi14"])
+        rsi_declining = rsi14 < previous_rsi
 
-        previous_rsi = float(
-            previous_row["rsi14"]
-        )
-
-        rsi_declining = (
-            rsi14 < previous_rsi
-        )
-
-    rsi_sell = (
-        rsi14 > RSI_SELL_THRESHOLD
-        and rsi_declining
-    )
-
-    # ---------------------------------------------------------
-    # SIGNAL
-    # ---------------------------------------------------------
+    rsi_sell = (rsi14 > RSI_SELL_THRESHOLD) and rsi_declining
 
     if rsi_sell or price_below_ema:
-
         signal = "SELL"
-
     elif buy_score == 3:
-
         signal = "BUY"
-
     elif buy_score >= 2:
-
         signal = "WATCH"
-
     else:
-
         signal = "NO SIGNAL"
 
-    # ---------------------------------------------------------
-    # STOP LOSS
-    # ---------------------------------------------------------
-
-    stop_loss = (
-        price
-        - ATR_STOP_MULTIPLIER * atr14
-    )
-
-    # Không cho Stop Loss âm
-    stop_loss = max(
-        0,
-        stop_loss,
-    )
-
-    # ---------------------------------------------------------
-    # TAKE PROFIT
-    # ---------------------------------------------------------
-
+    stop_loss = max(0.0, price - ATR_STOP_MULTIPLIER * atr14)
     risk = price - stop_loss
-
-    take_profit = (
-        price
-        + risk * RISK_REWARD_TARGET
-    )
-
-    # ---------------------------------------------------------
-    # RISK / REWARD
-    # ---------------------------------------------------------
-
-    reward = (
-        take_profit - price
-    )
-
-    if risk > 0:
-
-        rr = reward / risk
-
-    else:
-
-        rr = np.nan
+    take_profit = price + risk * RISK_REWARD_TARGET
+    reward = take_profit - price
+    rr = (reward / risk) if risk > 0 else np.nan
 
     return {
         "signal": signal,
-
         "price": price,
         "ema20": ema20,
         "rsi14": rsi14,
-
         "volume": volume,
         "volume_sma20": volume_sma20,
         "volume_ratio": volume_ratio,
-
         "atr14": atr14,
-
         "trend_ok": trend_ok,
         "volume_ok": volume_ok,
         "momentum_ok": momentum_ok,
-
         "buy_score": buy_score,
-
         "price_below_ema": price_below_ema,
         "rsi_sell": rsi_sell,
-
         "stop_loss": stop_loss,
         "take_profit": take_profit,
-
         "risk": risk,
         "reward": reward,
         "risk_reward": rr,
-
         "ema20_rising": ema20_rising,
     }
 
@@ -608,63 +356,29 @@ def evaluate_signal(
 # MAIN ANALYSIS
 # ============================================================
 
-def analyze_symbol(
-    ticker: str,
-) -> Optional[dict]:
-
+def analyze_symbol(ticker: str) -> Optional[dict]:
     ticker = ticker.upper().strip()
 
     if not ticker:
         return None
 
-    # 1. Historical
-    historical = load_historical_data(
-        ticker
-    )
+    historical = load_historical_data(ticker)
 
     if historical.empty:
-
         return {
             "ticker": ticker,
             "signal": "NOT FOUND",
-            "reason": (
-                f"Không tìm thấy dữ liệu "
-                f"cho mã {ticker}"
-            ),
+            "reason": f"Không tìm thấy dữ liệu cho mã {ticker}",
         }
 
-    # 2. Live data
-    live_ticks = load_live_ticks(
-        ticker
-    )
-
-    # 3. Historical + current live bar
-    df = merge_live_bar(
-        historical,
-        live_ticks,
-    )
-
-    # 4. Indicators
-    df = calculate_indicators(
-        df
-    )
-
-    # 5. Signal
-    result = evaluate_signal(
-        df
-    )
+    live_ticks = load_live_ticks(ticker)
+    df = merge_live_bar(historical, live_ticks)
+    df = calculate_indicators(df)
+    result = evaluate_signal(df)
 
     result["ticker"] = ticker
-
-    # Thời điểm dữ liệu
-    result["data_time"] = (
-        df["date"].iloc[-1]
-    )
-
-    # Cho biết có live data hay không
-    result["is_realtime"] = (
-        not live_ticks.empty
-    )
+    result["data_time"] = df["date"].iloc[-1]
+    result["is_realtime"] = not live_ticks.empty
 
     return result
 
@@ -673,142 +387,64 @@ def analyze_symbol(
 # FORMAT TELEGRAM
 # ============================================================
 
-def format_signal_message(
-    result: dict,
-) -> str:
-
-    ticker = result["ticker"]
-
-    signal = result.get(
-        "signal",
-        "NO SIGNAL",
-    )
+def format_signal_message(result: dict) -> str:
+    ticker = result.get("ticker", "UNKNOWN")
+    signal = result.get("signal", "NO SIGNAL")
 
     if signal == "BUY":
         signal_icon = "🟢"
-
     elif signal == "WATCH":
         signal_icon = "🟡"
-
     elif signal == "SELL":
         signal_icon = "🔴"
-
     elif signal == "NOT FOUND":
         signal_icon = "❌"
-
     else:
         signal_icon = "⚪"
 
-    # Không tìm thấy mã
     if signal == "NOT FOUND":
+        return f"❌ Không tìm thấy dữ liệu cho mã {ticker}."
 
-        return (
-            f"❌ Không tìm thấy dữ liệu "
-            f"cho mã {ticker}."
-        )
+    if signal == "NO SIGNAL" and ("price" not in result):
+        return f"📊 {ticker} — TA SIGNAL\n\n⚪ {result.get('reason', '')}"
 
-    # Không đủ dữ liệu
-    if signal == "NO SIGNAL" and (
-        "price" not in result
-    ):
-
-        return (
-            f"📊 {ticker} — TA SIGNAL\n\n"
-            f"⚪ {result.get('reason', '')}"
-        )
-
-    price = result["price"]
-    ema20 = result["ema20"]
-    rsi14 = result["rsi14"]
-
-    volume = result["volume"]
-    volume_sma20 = result["volume_sma20"]
-    volume_ratio = result["volume_ratio"]
-
-    atr14 = result["atr14"]
-
-    stop_loss = result["stop_loss"]
-    take_profit = result["take_profit"]
-
-    risk = result["risk"]
-    reward = result["reward"]
-    rr = result["risk_reward"]
-
-    trend_text = (
-        "✓"
-        if result["trend_ok"]
-        else "✗"
-    )
-
-    volume_text = (
-        "✓"
-        if result["volume_ok"]
-        else "✗"
-    )
-
-    momentum_text = (
-        "✓"
-        if result["momentum_ok"]
-        else "✗"
-    )
-
-    realtime_text = (
-        "🟢 REALTIME"
-        if result["is_realtime"]
-        else "🟡 DATA CUỐI CÙNG"
-    )
-
-    data_time = result[
-        "data_time"
-    ]
+    trend_text = "✓" if result.get("trend_ok") else "✗"
+    volume_text = "✓" if result.get("volume_ok") else "✗"
+    momentum_text = "✓" if result.get("momentum_ok") else "✗"
+    realtime_text = "🟢 REALTIME" if result.get("is_realtime") else "🟡 DATA CUỐI CÙNG"
+    data_time = result.get("data_time", "")
 
     return (
         f"📊 {ticker} — TA SIGNAL\n"
         f"{realtime_text}\n\n"
 
-        f"💰 Giá hiện tại: "
-        f"{price:,.2f}\n\n"
+        f"💰 Giá hiện tại: {_fmt(result.get('price'))} VNĐ\n\n"
 
         f"📈 CHỈ BÁO TA\n"
-        f"• EMA20: {ema20:,.2f}\n"
-        f"• RSI14: {rsi14:.2f}\n"
-        f"• Volume: {volume:,.0f}\n"
-        f"• Volume SMA20: "
-        f"{volume_sma20:,.0f}\n"
-        f"• Volume Ratio: "
-        f"{volume_ratio:.2f}x\n"
-        f"• ATR14: {atr14:,.2f}\n\n"
+        f"• EMA20: {_fmt(result.get('ema20'))}\n"
+        f"• RSI14: {_fmt(result.get('rsi14'))}\n"
+        f"• Volume: {_fmt(result.get('volume'), '{:,.0f}')}\n"
+        f"• Volume SMA20: {_fmt(result.get('volume_sma20'), '{:,.0f}')}\n"
+        f"• Volume Ratio: {_fmt(result.get('volume_ratio'))}x\n"
+        f"• ATR14: {_fmt(result.get('atr14'))}\n\n"
 
         f"🔎 ĐIỀU KIỆN BUY\n"
-        f"• Giá > EMA20 & EMA tăng: "
-        f"{trend_text}\n"
-        f"• Volume đạt chuẩn: "
-        f"{volume_text}\n"
-        f"• RSI trong vùng BUY: "
-        f"{momentum_text}\n"
-        f"• Score: "
-        f"{result['buy_score']}/3\n\n"
+        f"• Giá > EMA20 & EMA tăng: {trend_text}\n"
+        f"• Volume đạt chuẩn: {volume_text}\n"
+        f"• RSI trong vùng BUY: {momentum_text}\n"
+        f"• Score: {result.get('buy_score', 0)}/3\n\n"
 
-        f"🔔 TÍN HIỆU: "
-        f"{signal_icon} {signal}\n\n"
+        f"🔔 TÍN HIỆU: {signal_icon} {signal}\n\n"
 
         f"🛡️ RISK MANAGEMENT\n"
-        f"• Stop Loss: "
-        f"{stop_loss:,.2f}\n"
-        f"• Take Profit: "
-        f"{take_profit:,.2f}\n"
-        f"• Risk: "
-        f"{risk:,.2f}\n"
-        f"• Reward: "
-        f"{reward:,.2f}\n"
-        f"• Risk/Reward: "
-        f"1:{rr:.2f}\n\n"
+        f"• Stop Loss: {_fmt(result.get('stop_loss'))} VNĐ\n"
+        f"• Take Profit: {_fmt(result.get('take_profit'))} VNĐ\n"
+        f"• Risk: {_fmt(result.get('risk'))}\n"
+        f"• Reward: {_fmt(result.get('reward'))}\n"
+        f"• Risk/Reward: 1:{_fmt(result.get('risk_reward'))}\n\n"
 
-        f"⏱️ Dữ liệu: "
-        f"{data_time}\n\n"
-
-        f"⚠️ Tín hiệu được tạo "
-        f"theo bộ quy tắc TA của bot."
+        f"⏱️ Dữ liệu: {data_time}\n\n"
+        f"⚠️ Tín hiệu được tạo theo bộ quy tắc TA của bot."
     )
 
 
@@ -817,28 +453,15 @@ def format_signal_message(
 # ============================================================
 
 if __name__ == "__main__":
-
     print("=" * 60)
     print("TA SIGNAL — REALTIME STOCK ANALYSIS")
     print("=" * 60)
 
-    ticker = input(
-        "Nhập mã cổ phiếu: "
-    ).strip().upper()
-
-    result = analyze_symbol(
-        ticker
-    )
+    ticker = input("Nhập mã cổ phiếu: ").strip().upper()
+    result = analyze_symbol(ticker)
 
     if result is None:
-
         print("Mã không hợp lệ.")
-
     else:
-
         print()
-        print(
-            format_signal_message(
-                result
-            )
-        )
+        print(format_signal_message(result))

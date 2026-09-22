@@ -1,5 +1,6 @@
 import sqlite3
 from pathlib import Path
+import pandas as pd
 
 
 class HistoricalStore:
@@ -11,12 +12,16 @@ class HistoricalStore:
             exist_ok=True
         )
 
+        # Thêm timeout=30 để tránh lỗi 'database is locked' khi đa tiến trình
         self.conn = sqlite3.connect(
-            self.db_path
+            self.db_path,
+            timeout=30.0
         )
 
         self.cursor = self.conn.cursor()
 
+        # Kích hoạt WAL mode để tối ưu đọc/ghi đồng thời
+        self.cursor.execute("PRAGMA journal_mode=WAL;")
         self._create_table()
 
     def _create_table(self):
@@ -42,39 +47,36 @@ class HistoricalStore:
 
         self.conn.commit()
 
-    def save(self, df):
+    def save(self, df: pd.DataFrame) -> int:
         if df is None or df.empty:
             return 0
 
         records = []
 
         for _, row in df.iterrows():
+            date = str(row["date"])[:10]  # Format YYYY-MM-DD
 
-            date = str(row["date"])
+            symbol = str(row["symbol"]).upper() if "symbol" in row else None
+            if not symbol and "ticker" in row:
+                symbol = str(row["ticker"]).upper()
 
-            # Lấy phần ngày YYYY-MM-DD
-            date = date[:10]
+            if symbol:
+                records.append((
+                    symbol,
+                    date,
+                    float(row["open"]) if pd.notna(row["open"]) else None,
+                    float(row["high"]) if pd.notna(row["high"]) else None,
+                    float(row["low"]) if pd.notna(row["low"]) else None,
+                    float(row["close"]) if pd.notna(row["close"]) else None,
+                    float(row["volume"]) if pd.notna(row["volume"]) else 0.0
+                ))
 
-            records.append((
-                str(row["symbol"]).upper()
-                if "symbol" in row
-                else None,
+        if not records:
+            return 0
 
-                date,
-                row["open"],
-                row["high"],
-                row["low"],
-                row["close"],
-                row["volume"]
-            ))
-
-        records = [
-            r for r in records
-            if r[0] is not None
-        ]
-
+        # Dùng REPLACE thay cho IGNORE để cập nhật giá chốt phiên mới nhất
         self.cursor.executemany("""
-            INSERT OR IGNORE INTO historical_ohlcv
+            INSERT OR REPLACE INTO historical_ohlcv
             (
                 symbol,
                 date,
@@ -88,10 +90,9 @@ class HistoricalStore:
         """, records)
 
         self.conn.commit()
-
         return self.cursor.rowcount
 
-    def get_history(self, symbol):
+    def get_history(self, symbol: str) -> list:
         self.cursor.execute("""
             SELECT
                 symbol,
@@ -103,24 +104,33 @@ class HistoricalStore:
                 volume
             FROM historical_ohlcv
             WHERE symbol = ?
-            ORDER BY date
-        """, (symbol.upper(),))
+            ORDER BY date ASC
+        """, (symbol.upper().strip(),))
 
         return self.cursor.fetchall()
 
-    def get_last_date(self, symbol):
+    def get_last_date(self, symbol: str) -> str:
         self.cursor.execute("""
             SELECT MAX(date)
             FROM historical_ohlcv
             WHERE symbol = ?
-        """, (symbol.upper(),))
+        """, (symbol.upper().strip(),))
 
         result = self.cursor.fetchone()
 
-        if result is None:
+        if result is None or result[0] is None:
             return None
 
         return result[0]
 
     def close(self):
-        self.conn.close()
+        try:
+            self.conn.close()
+        except Exception:
+            pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.close()

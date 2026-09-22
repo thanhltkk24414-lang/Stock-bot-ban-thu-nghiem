@@ -35,6 +35,22 @@ from stock_bot.data_pipeline.failover_manager import (
 
 
 # =========================================================
+# HELPER CHUẨN HÓA ĐƠN VỊ GIÁ (Tránh lỗi +97563.6% PnL)
+# =========================================================
+
+def _normalize_price(price: float) -> float:
+    """
+    Đảm bảo giá khớp luôn theo đơn vị nghìn đồng (VD: 20,900 VNĐ -> 20.9).
+    Tránh trường hợp lệch đơn vị làm % Lãi/Lỗ tính ra con số khổng lồ.
+    """
+    if price is None or price <= 0:
+        return 0.0
+    if price > 2000:  # Giá nhận về theo VNĐ (VD: 20900)
+        return price / 1000.0
+    return price
+
+
+# =========================================================
 # XỬ LÝ DỮ LIỆU REALTIME
 # =========================================================
 
@@ -66,6 +82,9 @@ def handle_realtime_data(
     invalid_count = 0
 
     for item in parsed_data:
+
+        # Chuẩn hóa giá trước khi kiểm tra & lưu
+        item["price"] = _normalize_price(item.get("price", 0.0))
 
         # Kiểm tra dữ liệu
         if not MarketValidator.validate(item):
@@ -260,6 +279,9 @@ def run_dnse_failover(
 
                 if not data:
                     continue
+
+                # Chuẩn hóa giá DNSE
+                data["price"] = _normalize_price(data.get("price", 0.0))
 
                 # Kiểm tra dữ liệu DNSE
                 if not MarketValidator.validate(

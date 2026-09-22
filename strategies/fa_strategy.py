@@ -1,5 +1,5 @@
 """
-strategies/fa_strategy.py  —  Thành viên 4
+strategies/fa_strategy.py — Thành viên 4
 Lớp 1 (FA: Growth & Quality) của chiến lược CANSLIM + Momentum.
 
 Áp dụng ĐẦY ĐỦ các tiêu chí trong tài liệu BT3 (bản đầu + bản Hybrid CANSLIM/ATR), không bỏ tiêu chí nào.
@@ -36,16 +36,16 @@ QUARTER_GROWTH_BASIS = "yoy"        # "yoy": so với CÙNG KỲ năm trước (
 REQUIRE_ACCELERATION = True         # tăng trưởng quý này > tăng trưởng quý trước (Delta Growth)
 REQUIRE_QUARTER_GROWTH = False      # tạm tắt: financial_data.json chưa có net_profit_q1..q6
 MIN_ANNUAL_PROFIT_GROWTH = 15.0     # LN ròng năm gần nhất tăng > 15%
-MIN_ANNUAL_REVENUE_GROWTH = 8.0    # Doanh thu năm gần nhất tăng > 15%
+MIN_ANNUAL_REVENUE_GROWTH = 8.0     # Doanh thu năm gần nhất tăng > 8%
 REQUIRE_REVENUE_GROWTH = True       # 1007/1523 ma da co du lieu doanh thu nam
 REQUIRE_POSITIVE_3Y_PROFIT = True   # LN ròng dương liên tục 3 năm gần nhất
-REQUIRE_POSITIVE_CFO = True        # tạm bật: chưa có cfo
+REQUIRE_POSITIVE_CFO = True        # chưa có cfo
 MIN_FREE_FLOAT_PCT = 10.0           # 1523/1523 ma da co du free_float_pct
-BANK_EXEMPT_DEBT_EQUITY = False     # False = áp D/E < 1.2 cho mọi mã (đúng văn bản). True = miễn cho ngân hàng
+BANK_EXEMPT_DEBT_EQUITY = False     # False = áp D/E < 1.2 cho mọi mã. True = miễn cho ngân hàng
 STRICT_PRIORITY_SECTOR = False      # False: ngành ưu tiên chỉ được xếp trên (văn bản ghi "Ưu tiên")
 
-DEBT_EQUITY_IS_PERCENT = True       # financial_data.json ghi D/E theo % (60.2 = 0.602) -> tự chia 100. Đã là tỷ lệ thì đặt False
-EXCLUDED_EXCHANGES = set()          # ví dụ {"UPCOM"}. Mặc định không loại sàn nào (lớp thanh khoản sẽ lọc sau)
+DEBT_EQUITY_IS_PERCENT = True       # financial_data.json ghi D/E theo % (60.2 = 0.602) -> tự chia 100.
+EXCLUDED_EXCHANGES = set()          # Mặc định không loại sàn nào
 EXCHANGE_NAMES = {"HOSE", "HNX", "UPCOM"}
 
 # Ngành ưu tiên (so khớp theo từ khóa, không phân biệt hoa thường)
@@ -56,7 +56,7 @@ PRIORITY_SECTOR_KEYWORDS = {
     "Dầu khí / Năng lượng": ["dầu khí", "dau khi", "năng lượng", "nang luong", "oil", "gas", "energy"],
     "Ngân hàng": ["ngân hàng", "ngan hang", "bank"],
 }
-# Ngành bị hạ tỷ trọng (BT3 mục 2A): xuất khẩu hàng tiêu dùng truyền thống -> xếp cuối danh sách
+# Ngành bị hạ tỷ trọng
 DEPRIORITIZED_SECTOR_KEYWORDS = ["dệt may", "det may", "thủy sản", "thuy san", "gỗ", "textile", "seafood", "wood"]
 
 # ----------------------------------------------------------------------------
@@ -66,24 +66,22 @@ COLUMN_ALIASES = {
     "symbol": "ticker", "ma_ck": "ticker", "code": "ticker",
     "roe_pct": "roe", "de_ratio": "debt_equity", "d/e": "debt_equity",
     "nganh": "sector", "industry_vn": "sector", "freefloat": "free_float_pct",
+    "p/e": "pe", "pe_ratio": "pe"
 }
-# net_profit_q1..q6 : LN ròng 6 quý gần nhất, q1 = quý mới nhất (cần q5, q6 để so cùng kỳ)
-# net_profit_y1..y3 : LN ròng 3 năm gần nhất, y1 = năm mới nhất
-# revenue_y1..y3    : Doanh thu 3 năm gần nhất, y1 = năm mới nhất
-# cfo               : dòng tiền từ hoạt động kinh doanh (TTM hoặc năm gần nhất)
+
 NUMERIC_COLUMNS = (
-    ["roe", "debt_equity", "free_float_pct", "cfo"]
+    ["roe", "pe", "debt_equity", "free_float_pct", "cfo"]
     + [f"net_profit_q{i}" for i in range(1, 7)]
     + [f"net_profit_y{i}" for i in range(1, 4)]
     + [f"revenue_y{i}" for i in range(1, 4)]
 )
 REQUIRED_COLUMNS = ["ticker", "sector"] + NUMERIC_COLUMNS
 OPTIONAL_CLOSE_COLUMNS = ["close_d1", "close_d2", "close_d3", "close_d4"]   # 4 giá đóng cửa gần nhất
-OPTIONAL_FOREIGN_COLUMN = "foreign_net_buy_20d"  # (tùy chọn) mua bán ròng NĐTNN 20 phiên -> ưu tiên xếp trên (chữ I)
+OPTIONAL_FOREIGN_COLUMN = "foreign_net_buy_20d"  # Mua bán ròng NĐTNN 20 phiên
 
 
 def _ensure_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Cột nào thiếu thì tạo với giá trị NaN (không làm chương trình sập, báo cáo sẽ chỉ ra thiếu gì)."""
+    """Cột nào thiếu thì tạo với giá trị NaN (không làm chương trình sập)."""
     out = df.copy()
     for col in NUMERIC_COLUMNS:
         if col not in out.columns:
@@ -98,7 +96,7 @@ def _ensure_columns(df: pd.DataFrame) -> pd.DataFrame:
 # 3. Đọc dữ liệu: CSV phẳng
 # ----------------------------------------------------------------------------
 def fa_load_data(csv_path: str | Path) -> pd.DataFrame:
-    """Đọc CSV, chuẩn hóa tên cột về snake_case, ép kiểu số. Cột thiếu -> NaN + cảnh báo."""
+    """Đọc CSV, chuẩn hóa tên cột về snake_case, ép kiểu số."""
     df = pd.read_csv(csv_path)
     df.columns = [c.strip().lower().replace(" ", "_") for c in df.columns]
     df = df.rename(columns=COLUMN_ALIASES)
@@ -117,10 +115,7 @@ def fa_load_data(csv_path: str | Path) -> pd.DataFrame:
 
 
 # ----------------------------------------------------------------------------
-# 3b. Đọc dữ liệu: financial_data.json (mỗi mã có danh sách "history" gồm các kỳ quý / năm)
-#     Trường đọc được ở cấp mã : industry (ngành ICB), exchange, free_float_pct,
-#                                foreign_net_buy_20d, recent_closes [mới nhất -> cũ nhất]
-#     Trường đọc được ở mỗi kỳ  : net_profit (hoặc eps), revenue, roe, roe_ttm, debt_equity, cfo, cfo_ttm
+# 3b. Đọc dữ liệu: financial_data.json
 # ----------------------------------------------------------------------------
 _Q_RE = re.compile(r"^\d{4}-Q[1-4]$")
 _Y_RE = re.compile(r"^\d{4}-Năm$")
@@ -146,7 +141,7 @@ def _latest_non_null(rows: list, field: str):
 
 
 def fa_load_financial_json(json_path: str | Path) -> pd.DataFrame:
-    """Đọc financial_data.json -> DataFrame phẳng. Không đoán số liệu: thiếu thì để NaN."""
+    """Đọc financial_data.json -> DataFrame phẳng (Bổ sung đọc P/E)."""
     with open(json_path, "r", encoding="utf-8") as f:
         raw = json.load(f)
 
@@ -156,13 +151,19 @@ def fa_load_financial_json(json_path: str | Path) -> pd.DataFrame:
         q_rows = sorted((h for h in hist if _Q_RE.match(str(h.get("period", "")))), key=lambda h: h["period"])
         y_rows = sorted((h for h in hist if _Y_RE.match(str(h.get("period", "")))), key=lambda h: h["period"])
 
-        # File cũ để tên sàn trong "sector" -> tách ra; ngành thật lấy từ "industry"
+        # Lấy tên ngành, ưu tiên industry -> sector
         sector = info.get("industry") or info.get("sector") or ""
-        exchange = info.get("exchange") or (info.get("sector") if info.get("sector") in EXCHANGE_NAMES else "")
+        
+        # Nếu sector bị nhầm thành tên sàn (HOSE, HNX, UPCOM), đặt lại về rỗng để Bot tự nhận diện sau
         if sector in EXCHANGE_NAMES:
-            sector = ""
-
-        # ROE: roe_ttm (quý mới nhất) > cộng ROE 4 quý (nếu đủ) > ROE năm gần nhất
+            exchange = sector
+            sector = "Chưa phân ngành"
+        else:
+            exchange = info.get("exchange") or ""
+            
+        if not sector:
+            sector = "Chưa phân ngành"
+        # ROE: roe_ttm > cộng 4 quý > ROE năm
         roe = np.nan
         if q_rows and q_rows[-1].get("roe_ttm") is not None:
             roe = float(q_rows[-1]["roe_ttm"])
@@ -170,6 +171,15 @@ def fa_load_financial_json(json_path: str | Path) -> pd.DataFrame:
             roe = float(sum(r["roe"] for r in q_rows[-4:]))
         elif y_rows:
             roe = _latest_non_null(y_rows, "roe")
+        elif info.get("roe") is not None:
+            roe = float(info["roe"])
+
+        # P/E: Quý gần nhất > Năm > Cấp Ticker
+        pe = _latest_non_null(q_rows, "pe")
+        if pd.isna(pe):
+            pe = _latest_non_null(y_rows, "pe")
+        if pd.isna(pe) and info.get("pe") is not None:
+            pe = float(info["pe"])
 
         de = _latest_non_null(q_rows, "debt_equity")
         if pd.isna(de):
@@ -182,11 +192,18 @@ def fa_load_financial_json(json_path: str | Path) -> pd.DataFrame:
 
         has_np = any(r.get("net_profit") is not None for r in q_rows + y_rows)
         ff = info.get("free_float_pct")
-        rec = {"ticker": str(ticker).strip().upper(), "sector": sector, "exchange": exchange,
-               "roe": roe, "debt_equity": de, "cfo": cfo,
-               "free_float_pct": np.nan if ff is None else float(ff),
-               "profit_source": "net_profit" if has_np else "eps",
-               "latest_quarter": q_rows[-1]["period"] if q_rows else ""}
+        rec = {
+            "ticker": str(ticker).strip().upper(), 
+            "sector": sector, 
+            "exchange": exchange,
+            "roe": roe, 
+            "pe": pe,
+            "debt_equity": de, 
+            "cfo": cfo,
+            "free_float_pct": np.nan if ff is None else float(ff),
+            "profit_source": "net_profit" if has_np else "eps",
+            "latest_quarter": q_rows[-1]["period"] if q_rows else ""
+        }
         fn = info.get(OPTIONAL_FOREIGN_COLUMN)
         if fn is not None:
             rec[OPTIONAL_FOREIGN_COLUMN] = float(fn)
@@ -211,23 +228,22 @@ def fa_load_financial_json(json_path: str | Path) -> pd.DataFrame:
 # 4. Tính các cột tăng trưởng
 # ----------------------------------------------------------------------------
 def _growth_pct(new: pd.Series, old: pd.Series) -> pd.Series:
-    """% tăng trưởng. Kỳ gốc <= 0 thì không có nghĩa (vd từ lỗ sang lãi) -> NaN (bị loại)."""
+    """% tăng trưởng. Kỳ gốc <= 0 -> NaN (bị loại)."""
     return ((new / old.where(old > 0)) - 1.0) * 100.0
 
 
 def fa_compute_growth(df: pd.DataFrame) -> pd.DataFrame:
-    """Thêm: eps_growth_qoq (+_prev, theo QUARTER_GROWTH_BASIS), eps_growth_delta,
-    eps_growth_yoy (LN năm), revenue_growth_yoy (doanh thu năm), profit_positive_3y."""
+    """Thêm: eps_growth_qoq, eps_growth_delta, eps_growth_yoy, revenue_growth_yoy."""
     out = _ensure_columns(df)
-    if QUARTER_GROWTH_BASIS == "yoy":      # so với cùng kỳ năm trước
+    if QUARTER_GROWTH_BASIS == "yoy":
         now = _growth_pct(out["net_profit_q1"], out["net_profit_q5"])
         prev = _growth_pct(out["net_profit_q2"], out["net_profit_q6"])
-    else:                                  # so với quý liền trước
+    else:
         now = _growth_pct(out["net_profit_q1"], out["net_profit_q2"])
         prev = _growth_pct(out["net_profit_q2"], out["net_profit_q3"])
     out["eps_growth_qoq"] = now
     out["eps_growth_qoq_prev"] = prev
-    out["eps_growth_delta"] = now - prev   # Delta Growth (điểm %)
+    out["eps_growth_delta"] = now - prev
 
     out["eps_growth_yoy"] = _growth_pct(out["net_profit_y1"], out["net_profit_y2"])
     out["revenue_growth_yoy"] = _growth_pct(out["revenue_y1"], out["revenue_y2"])
@@ -236,7 +252,7 @@ def fa_compute_growth(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ----------------------------------------------------------------------------
-# 5. Các bộ lọc (mỗi hàm trả về mask boolean; thiếu dữ liệu -> False)
+# 5. Các bộ lọc
 # ----------------------------------------------------------------------------
 def _all_true(df: pd.DataFrame) -> pd.Series:
     return pd.Series(True, index=df.index)
@@ -288,7 +304,7 @@ def fa_filter_free_float(df: pd.DataFrame) -> pd.Series:
 
 
 def fa_tag_sector(df: pd.DataFrame) -> pd.DataFrame:
-    """Sector Tagging: priority_sector (nhóm ưu tiên hoặc '') và deprioritized (ngành bị hạ tỷ trọng)."""
+    """Sector Tagging."""
     def _tag(sector: str) -> str:
         s = (sector or "").lower()
         for group, keywords in PRIORITY_SECTOR_KEYWORDS.items():
@@ -304,18 +320,15 @@ def fa_tag_sector(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _q_cols() -> list:
-    """Dữ liệu gốc cần có để tính tăng trưởng quý gần nhất."""
     return ["net_profit_q1", "net_profit_q5"] if QUARTER_GROWTH_BASIS == "yoy" else ["net_profit_q1", "net_profit_q2"]
 
 
 def _q_cols_accel() -> list:
-    """Dữ liệu gốc cần có để so tăng trưởng quý này với quý trước."""
     if QUARTER_GROWTH_BASIS == "yoy":
         return ["net_profit_q1", "net_profit_q2", "net_profit_q5", "net_profit_q6"]
     return ["net_profit_q1", "net_profit_q2", "net_profit_q3"]
 
 
-# Danh sách tiêu chí: (tên hiển thị, các cột DỮ LIỆU GỐC phải có, hàm lọc)
 FA_CRITERIA = [
     ("ROE > 10%", ["roe"], fa_filter_roe),
     ("D/E < 1.2", ["debt_equity"], fa_filter_debt_equity),
@@ -330,7 +343,7 @@ FA_CRITERIA = [
 
 
 # ----------------------------------------------------------------------------
-# 6. Chạy toàn bộ bộ lọc + báo cáo dữ liệu thiếu
+# 6. Chạy bộ lọc & Báo cáo
 # ----------------------------------------------------------------------------
 def fa_run_screen(df: pd.DataFrame) -> pd.DataFrame:
     """Trả về danh sách mã đạt TẤT CẢ tiêu chí FA."""
@@ -342,8 +355,6 @@ def fa_run_screen(df: pd.DataFrame) -> pd.DataFrame:
         mask &= df["priority_sector"] != ""
 
     passed = df[mask.fillna(False)].copy()
-    # Thứ tự: ngành ưu tiên lên trước, ngành hạ tỷ trọng xuống cuối, có dòng tiền ngoại ròng dương ưu tiên,
-    # sau đó tăng trưởng quý giảm dần
     passed["_prio"] = passed["priority_sector"] != ""
     passed["_foreign"] = passed[OPTIONAL_FOREIGN_COLUMN] > 0 if OPTIONAL_FOREIGN_COLUMN in passed.columns else False
     passed = passed.sort_values(["deprioritized", "_prio", "_foreign", "eps_growth_qoq"],
@@ -352,8 +363,7 @@ def fa_run_screen(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def fa_criteria_report(df: pd.DataFrame) -> str:
-    """Bảng: mỗi tiêu chí có bao nhiêu mã CÓ dữ liệu để xét và bao nhiêu mã ĐẠT.
-    'Có dữ liệu' thấp = đó là thứ cần yêu cầu bên Data bổ sung."""
+    """Báo cáo tỷ lệ dữ liệu khả dụng."""
     d = fa_tag_sector(fa_compute_growth(df))
     rows = []
     for name, cols, fn in FA_CRITERIA:
@@ -364,12 +374,12 @@ def fa_criteria_report(df: pd.DataFrame) -> str:
     text = f"Tổng số mã: {len(d)} | So sánh tăng trưởng quý theo: {QUARTER_GROWTH_BASIS}\n"
     text += pd.DataFrame(rows).to_string(index=False)
     if "profit_source" in d.columns:
-        text += f"\nNguồn số liệu lợi nhuận: {d['profit_source'].value_counts().to_dict()} (eps = tạm dùng EPS thay LN ròng)"
+        text += f"\nNguồn số liệu lợi nhuận: {d['profit_source'].value_counts().to_dict()}"
     return text
 
 
 # ----------------------------------------------------------------------------
-# 7. Xuất data/watch_list.json (Thành viên 4 ghi, Thành viên 3 chỉ đọc)
+# 7. Xuất data/watch_list.json (Xuất thêm chỉ số PE và ROE chuẩn)
 # ----------------------------------------------------------------------------
 def _num(value, ndigits: int = 1):
     if value is None or pd.isna(value):
@@ -379,32 +389,32 @@ def _num(value, ndigits: int = 1):
 
 def fa_export_watch_list(passed: pd.DataFrame,
                          output_path: str | Path = "data/watch_list.json") -> Path:
-    """Ghi watch_list.json. Ghi qua file tạm rồi replace để Thành viên 3 không đọc phải file ghi dở."""
+    """Ghi watch_list.json kèm P/E và ROE."""
     today = date.today().isoformat()
     records = []
     for row in passed.to_dict(orient="records"):
         rec = {
             "ticker": row["ticker"],
             "sector": row["sector"],
-            "roe": _num(row["roe"]),
-            "debt_equity": _num(row["debt_equity"], 2),
-            "eps_growth_qoq": _num(row["eps_growth_qoq"]),
-            "eps_growth_qoq_prev": _num(row["eps_growth_qoq_prev"]),
-            "eps_growth_yoy": _num(row["eps_growth_yoy"]),
-            "free_float_pct": _num(row["free_float_pct"]),
-            # --- trường mở rộng (cần báo Thành viên 3 biết) ---
+            "roe": _num(row.get("roe")),
+            "pe": _num(row.get("pe")),  # <-- ĐÃ THÊM P/E CHUẨN ĐỂ BOT HIỂN THỊ
+            "debt_equity": _num(row.get("debt_equity"), 2),
+            "eps_growth_qoq": _num(row.get("eps_growth_qoq")),
+            "eps_growth_qoq_prev": _num(row.get("eps_growth_qoq_prev")),
+            "eps_growth_yoy": _num(row.get("eps_growth_yoy")),
+            "free_float_pct": _num(row.get("free_float_pct")),
             "quarter_growth_basis": QUARTER_GROWTH_BASIS,
-            "revenue_growth_yoy": _num(row["revenue_growth_yoy"]),
-            "eps_growth_delta": _num(row["eps_growth_delta"]),
-            "cfo": _num(row["cfo"], 0),
-            "priority_sector": row["priority_sector"],
+            "revenue_growth_yoy": _num(row.get("revenue_growth_yoy")),
+            "eps_growth_delta": _num(row.get("eps_growth_delta")),
+            "cfo": _num(row.get("cfo"), 0),
+            "priority_sector": row.get("priority_sector", ""),
             "updated_at": today,
         }
         if OPTIONAL_FOREIGN_COLUMN in row and not pd.isna(row[OPTIONAL_FOREIGN_COLUMN]):
             rec[OPTIONAL_FOREIGN_COLUMN] = _num(row[OPTIONAL_FOREIGN_COLUMN], 0)
         closes = [_num(row.get(c), 2) for c in OPTIONAL_CLOSE_COLUMNS if c in row]
         if closes and any(c is not None for c in closes):
-            rec["recent_closes"] = closes  # [mới nhất, ..., cũ nhất]
+            rec["recent_closes"] = closes
         records.append(rec)
 
     output_path = Path(output_path)
@@ -422,9 +432,7 @@ def fa_export_watch_list(passed: pd.DataFrame,
 
 
 # ----------------------------------------------------------------------------
-# 8. Chạy thử:
-#    python strategies/fa_strategy.py data/financial_data.json data/watch_list.test.json
-#    python strategies/fa_strategy.py data/sample_fundamentals.csv data/watch_list.sample.json
+# 8. Main
 # ----------------------------------------------------------------------------
 if __name__ == "__main__":
     import sys
@@ -437,5 +445,6 @@ if __name__ == "__main__":
     path = fa_export_watch_list(result, out_file)
     print(f"\nĐọc {len(raw)} mã -> đạt TẤT CẢ tiêu chí FA: {len(result)} mã -> {path}")
     if not result.empty:
-        cols = ["ticker", "sector", "roe", "debt_equity", "eps_growth_qoq", "eps_growth_qoq_prev", "eps_growth_yoy"]
+        cols = ["ticker", "sector", "roe", "pe", "debt_equity", "eps_growth_qoq", "eps_growth_yoy"]
+        cols = [c for c in cols if c in result.columns]
         print(result[cols].to_string(index=False))

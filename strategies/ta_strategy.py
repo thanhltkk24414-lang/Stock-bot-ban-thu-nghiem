@@ -286,8 +286,8 @@ def ta_evaluate_symbol(ticker: str, df: pd.DataFrame, position: dict | None) -> 
 
 
 # ----------------------------------------------------------------------------
-# 6. Chẩn đoán: từng điều kiện MUA riêng lẻ đang khớp bao nhiêu mã (giống
-#    fa_criteria_report/liq_criteria_report)
+## ----------------------------------------------------------------------------
+# 6. Chẩn đoán: từng điều kiện MUA riêng lẻ đang khớp bao nhiêu mã
 # ----------------------------------------------------------------------------
 def ta_criteria_report(watch_list: list[dict], db_path: str | Path = DEFAULT_DB_PATH,
                        realtime: bool = True) -> str:
@@ -304,7 +304,7 @@ def ta_criteria_report(watch_list: list[dict], db_path: str | Path = DEFAULT_DB_
         row, prev = hist.iloc[-1], hist.iloc[-2]
         if pd.isna(row["rsi14"]) or pd.isna(prev["rsi14"]) or pd.isna(row["volume_sma20"]):
             rows.append({"ticker": ticker, "trend_ok": None, "volume_ok": None,
-                         "momentum_ok": None, "ghi_chú": "chỉ báo chưa đủ 'làm nóng'"})
+                         "momentum_ok": None, "ghi_chú": "chỉ báo chưa đủ làm nóng"})
             continue
 
         trend_ok = row["close"] > row["ema20"] > prev["ema20"]
@@ -320,14 +320,35 @@ def ta_criteria_report(watch_list: list[dict], db_path: str | Path = DEFAULT_DB_
     df = pd.DataFrame(rows)
     text = f"Tổng số mã xét (đã qua Lớp 1+2): {len(watch_list)}\n"
     checkable = df[df["trend_ok"].notna()] if not df.empty else df
+    
     if not checkable.empty:
         text += f"Đủ dữ liệu để xét: {len(checkable)}/{len(df)}\n"
         for cond, label in [("trend_ok", "EMA20 dốc lên & Giá>EMA20"),
                             ("volume_ok", f"Volume >= {VOLUME_SPIKE_RATIO}x SMA20"),
                             ("momentum_ok", f"RSI trong [{RSI_BUY_MIN}, {RSI_BUY_MAX}]")]:
-            text += f"  {label}: {int(checkable[cond].sum())}/{len(checkable)} mã đạt\n"
-        text += f"  Đạt CẢ 3 (MUA): {int((checkable['trend_ok'] & checkable['volume_ok'] & checkable['momentum_ok']).sum())}/{len(checkable)}\n"
-    text += "\nChi tiết từng mã:\n" + df.to_string(index=False)
+            text += f" • {label}: {int(checkable[cond].sum())}/{len(checkable)} mã\n"
+        
+        buy_count = int((checkable['trend_ok'] & checkable['volume_ok'] & checkable['momentum_ok']).sum())
+        text += f"🎯 Đạt CẢ 3 (MUA): {buy_count}/{len(checkable)}\n"
+    
+    text += "\nChi tiết từng mã:\n"
+    
+    # TRÌNH BÀY DẠNG LIST GỌN ĐỂ TRÁNH VỠ HÀNG TELEGRAM
+    for _, r in df.iterrows():
+        t = r["ticker"]
+        if r["ghi_chú"]:
+            text += f"• {t}: ⚠️ {r['ghi_chú']}\n"
+            continue
+            
+        t_ok = "📈" if r["trend_ok"] else "❌"
+        v_ok = "🔊" if r["volume_ok"] else "❌"
+        m_ok = "⚡" if r["momentum_ok"] else "❌"
+        
+        if r["trend_ok"] and r["volume_ok"] and r["momentum_ok"]:
+            text += f"🟢 {t}: ĐẠT MUA (RSI:{r['rsi']} | Vol:{r['volume_ratio']}x)\n"
+        else:
+            text += f"• {t}: [Trend:{t_ok} Vol:{v_ok} RSI:{m_ok}]\n"
+            
     return text
 
 
@@ -387,3 +408,35 @@ if __name__ == "__main__":
     result = ta_run_scan(watch_list, db_file)
     for e in result:
         print(json.dumps(e, ensure_ascii=False, indent=2))
+
+def ta_build_live_bar(ticker: str, db_path: str | Path = DEFAULT_DB_PATH) -> dict | None:
+    """Dựng nến hôm nay từ tick real-time - Đã tối ưu tốc độ đọc SQLite."""
+    conn = sqlite3.connect(str(db_path))
+    try:
+        # TẠO INDEX nếu chưa có -> Giúp SQLite truy vấn ngay lập tức thay vì quét toàn bộ DB
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_market_data_lookup ON market_data(symbol, data_type, timestamp);")
+        
+        today_str = date.today().isoformat()
+        df = pd.read_sql_query(
+            """
+            SELECT price, volume
+            FROM market_data
+            WHERE symbol = ? AND data_type = 'match_price' AND timestamp >= ?
+            ORDER BY timestamp ASC
+            """,
+            conn, params=(ticker.upper(), today_str),
+        )
+    finally:
+        conn.close()
+
+    if df.empty:
+        return None
+
+    return {
+        "date": today_str,
+        "open": float(df["price"].iloc[0]),
+        "high": float(df["price"].max()),
+        "low": float(df["price"].min()),
+        "close": float(df["price"].iloc[-1]),
+        "volume": float(df["volume"].sum()),
+    }
