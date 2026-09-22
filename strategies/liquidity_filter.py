@@ -33,26 +33,20 @@ def load_watchlist():
     if isinstance(data, dict):
         data = data.get("symbols", [])
 
-    # Trường hợp: ["FPT", "VCB", ...]
+    # Trường hợp: ["FPT", "VCB", ...] -> chuẩn hóa thành dict rỗng để đồng nhất xử lý
     if all(isinstance(item, str) for item in data):
-        return data
+        return [{"ticker": s} for s in data]
 
-    # Trường hợp mỗi phần tử là dictionary
+    # Trường hợp mỗi phần tử là dict đầy đủ (từ FA) -> GIỮ NGUYÊN, không rút gọn
     if all(isinstance(item, dict) for item in data):
-        symbols = []
-
+        records = []
         for item in data:
-            # thử các tên key phổ biến
-            symbol = (
-                item.get("symbol")
-                or item.get("ticker")
-                or item.get("code")
-            )
-
+            symbol = item.get("symbol") or item.get("ticker") or item.get("code")
             if symbol:
-                symbols.append(symbol)
-
-        return symbols
+                rec = dict(item)          # copy nguyên dict gốc
+                rec["ticker"] = symbol    # đảm bảo luôn có key "ticker" chuẩn
+                records.append(rec)
+        return records
 
     return []
 
@@ -108,13 +102,12 @@ def calculate_turnover(symbol):
 # 4. LỌC THANH KHOẢN
 # ============================================================
 
-def run_liquidity_filter(symbols):
-
+def run_liquidity_filter(records):
     results = []
     passed = []
 
-    for symbol in symbols:
-
+    for rec in records:
+        symbol = rec["ticker"]
         result = calculate_turnover(symbol)
 
         if result is None:
@@ -123,7 +116,7 @@ def run_liquidity_filter(symbols):
         results.append(result)
 
         if result["avg_turnover"] >= MIN_TURNOVER_VND:
-            passed.append(symbol)
+            passed.append(rec)   # <-- giữ nguyên cả dict, không chỉ symbol
 
     return results, passed
 
@@ -150,74 +143,28 @@ def save_watchlist(symbols):
 # ============================================================
 
 def main():
+    ...
+    records = load_watchlist()          # đổi tên biến cho rõ nghĩa: records thay vì symbols
 
-    print("=" * 60)
-    print("LỚP 2 — LIQUIDITY FILTER")
-    print("=" * 60)
-
-    symbols = load_watchlist()
-
-    print(f"Tổng số mã đầu vào: {len(symbols)}")
+    print(f"Tổng số mã đầu vào: {len(records)}")
     print(f"Ngưỡng Turnover TB20: {MIN_TURNOVER_VND / 1e9:.0f} tỷ VNĐ")
     print()
 
-    results, passed = run_liquidity_filter(symbols)
+    results, passed = run_liquidity_filter(records)
 
-    print(f"Có dữ liệu: {len(results)}/{len(symbols)} mã")
+    print(f"Có dữ liệu: {len(results)}/{len(records)} mã")
     print(f"Đạt thanh khoản: {len(passed)} mã")
-    print(f"Bị loại: {len(symbols) - len(passed)} mã")
-    print()
-
-    # --------------------------------------------------------
-    # Thống kê phân phối
-    # --------------------------------------------------------
-
-    if results:
-
-        turnover_values = [
-            x["avg_turnover"]
-            for x in results
-        ]
-
-        print("PHÂN PHỐI TURNOVER TB20")
-        print(
-            f"  Min    : "
-            f"{min(turnover_values):,.0f} VNĐ"
-        )
-        print(
-            f"  Median : "
-            f"{pd.Series(turnover_values).median():,.0f} VNĐ"
-        )
-        print(
-            f"  Max    : "
-            f"{max(turnover_values):,.0f} VNĐ"
-        )
-
-    print()
-    print("-" * 60)
-
-    # --------------------------------------------------------
-    # Các mã đạt
-    # --------------------------------------------------------
+    print(f"Bị loại: {len(records) - len(passed)} mã")
+    ...
 
     print("CÁC MÃ ĐẠT LIQUIDITY:")
-
-    for symbol in passed:
-        result = next(
-            x for x in results
-            if x["symbol"] == symbol
-        )
-
-        print(
-            f"  {symbol:<8} "
-            f"{result['avg_turnover'] / 1e9:>8.2f} tỷ/ngày"
-        )
-
-    # --------------------------------------------------------
-    # Lưu watchlist mới
-    # --------------------------------------------------------
+    for rec in passed:
+        symbol = rec["ticker"]
+        result = next(x for x in results if x["symbol"] == symbol)
+        print(f"  {symbol:<8} {result['avg_turnover'] / 1e9:>8.2f} tỷ/ngày")
 
     save_watchlist(passed)
+    ...
 
     print()
     print("=" * 60)

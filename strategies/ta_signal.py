@@ -153,15 +153,18 @@ def load_live_ticks(ticker: str) -> pd.DataFrame:
     if not ticker:
         return pd.DataFrame()
 
+    from datetime import date
+    today_str = date.today().isoformat()
+
     query = """
-        SELECT symbol, price, volume, timestamp as time 
-        FROM realtime_ticks 
-        WHERE symbol = ? 
-        ORDER BY timestamp DESC LIMIT 1
+        SELECT symbol, price, volume, timestamp as time
+        FROM market_data
+        WHERE symbol = ? AND data_type = 'match_price' AND timestamp >= ?
+        ORDER BY timestamp DESC
     """
     try:
         with get_connection() as conn:
-            df = pd.read_sql_query(query, conn, params=(ticker,))
+            df = pd.read_sql_query(query, conn, params=(ticker, today_str))
             if not df.empty and "price" in df.columns:
                 df["price"] = df["price"].apply(_normalize_price)
             return df
